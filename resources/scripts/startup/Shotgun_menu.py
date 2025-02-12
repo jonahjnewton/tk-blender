@@ -20,13 +20,13 @@ import inspect
 
 import bpy
 from bpy.types import Header, Menu, Panel, Operator
-from bpy.app.handlers import load_factory_startup_post, persistent
+from bpy.app.handlers import load_factory_startup_post, persistent, load_post
 
 import site
 
 DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 
-ext_libs = os.environ.get("PYSIDE2_PYTHONPATH")
+ext_libs = os.environ.get("PYSIDE_PYTHONPATH")
 
 if ext_libs and os.path.exists(ext_libs):
     if ext_libs not in sys.path:
@@ -40,7 +40,7 @@ bl_info = {
     "license": "GPL",
     "deps": "",
     "version": (1, 0, 0),
-    "blender": (2, 82, 0),
+    "blender": (4, 2, 0),
     "location": "Shotgun",
     "warning": "",
     "wiki_url": "https://github.com/diegogarciahuerta/tk-blender/releases",
@@ -51,21 +51,31 @@ bl_info = {
 }
 
 
-PYSIDE2_MISSING_MESSAGE = (
+PYSIDE_MISSING_MESSAGE = (
     "\n"
     + "-" * 80
-    + "\nCould not import PySide2 as a Python module. Shotgun menu will not be available."
+    + "\nCould not import PySide2 or PySide6 as a Python module. Shotgun menu will not be available."
     + "\n\nPlease check the engine documentation for more information:"
     + "\nhttps://github.com/diegogarciahuerta/tk-blender/edit/master/README.md\n"
     + "-" * 80
 )
 
+
 try:
     from PySide2 import QtWidgets, QtCore
 
     PYSIDE2_IMPORTED = True
+    PYSIDE6_IMPORTED = False
 except ModuleNotFoundError:
-    PYSIDE2_IMPORTED = False
+    try:
+        from PySide6 import QtWidgets, QtCore
+
+        PYSIDE2_IMPORTED = False
+        PYSIDE6_IMPORTED = True
+    except ModuleNotFoundError:
+        
+        PYSIDE2_IMPORTED = False
+        PYSIDE6_IMPORTED = False
 
 
 class ShotgunConsoleLog(bpy.types.Operator):
@@ -98,14 +108,17 @@ class QtWindowEventLoop(bpy.types.Operator):
     def __init__(self):
         self._app = None
         self._timer = None
-        self._event_loop = None
+        #self._event_loop = None
 
     def processEvents(self):
-        self._event_loop.processEvents()
-        self._app.sendPostedEvents(None, 0)
+        # Jonah Newton 12/2/24 - Event loop causing lots of seg faults. Sending processEvents to app seems to work.
+        #self._event_loop.processEvents()
+        #self._app.sendPostedEvents(None, 0)
+        self._app.processEvents()
 
     def modal(self, context, event):
         if event.type == "TIMER":
+            # Jonah Newton 3/6/24 - This statement runs when then window is first initialised, and there are no QT windows open, thus cancelling the loop.
             if self._app and not self.anyQtWindowsAreOpen():
                 self.cancel(context)
                 return {"FINISHED"}
@@ -121,7 +134,7 @@ class QtWindowEventLoop(bpy.types.Operator):
         self._app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(
             sys.argv
         )
-        self._event_loop = QtCore.QEventLoop()
+        #self._event_loop = QtCore.QEventLoop()
 
         # run modal
         wm = context.window_manager
@@ -243,7 +256,7 @@ def insert_main_menu(menu_class, before_menu_class):
 #         layout.menu("TOPBAR_MT_help")
 
 
-def boostrap():
+def bootstrap():
     # start the engine
     SGTK_MODULE_PATH = os.environ.get("SGTK_MODULE_PATH")
     if SGTK_MODULE_PATH and SGTK_MODULE_PATH not in sys.path:
@@ -258,24 +271,30 @@ def boostrap():
 
 @persistent
 def startup(dummy):
-    bpy.ops.screen.qt_event_loop()
-    boostrap()
+    post_load(dummy)
+    bootstrap()
+
+@persistent
+def post_load(dummy):
+    if not any(x.bl_idname == "SCREEN_OT_qt_event_loop" for x in bpy.context.window.modal_operators):
+        bpy.ops.screen.qt_event_loop()
 
 
 @persistent
-def error_importing_pyside2(*args):
-    bpy.ops.shotgun.logger(level="ERROR", message=PYSIDE2_MISSING_MESSAGE)
+def error_importing_pyside(*args):
+    bpy.ops.shotgun.logger(level="ERROR", message=PYSIDE_MISSING_MESSAGE)
 
 
 def register():
     bpy.utils.register_class(ShotgunConsoleLog)
 
-    if not PYSIDE2_IMPORTED:
+    if not PYSIDE2_IMPORTED and not PYSIDE6_IMPORTED:
         # bpy.app.timers.register(error_importing_pyside2, first_interval=5)
-        load_factory_startup_post.append(error_importing_pyside2)
+        load_factory_startup_post.append(error_importing_pyside)
         return
-
+    
     bpy.utils.register_class(QtWindowEventLoop)
+        
     TOPBAR_MT_help = bpy.types.TOPBAR_MT_help
     TOPBAR_MT_editor_menus = insert_main_menu(
         TOPBAR_MT_shotgun, before_menu_class=TOPBAR_MT_help
@@ -284,12 +303,17 @@ def register():
     bpy.utils.register_class(TOPBAR_MT_shotgun)
 
     load_factory_startup_post.append(startup)
+    load_post.append(post_load)
+
 
 
 def unregister():
     bpy.utils.unregister_class(ShotgunConsoleLog)
 
-    if not PYSIDE2_IMPORTED:
+    if not PYSIDE2_IMPORTED and not PYSIDE6_IMPORTED:
         return
-
+    
+    bpy.utils.unregister_class(QtWindowEventLoop)
     bpy.utils.unregister_class(TOPBAR_MT_shotgun)
+    load_factory_startup_post.remove(startup)
+    load_post.remove(post_load)

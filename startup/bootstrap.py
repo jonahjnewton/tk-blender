@@ -127,7 +127,7 @@ def start_toolkit():
     # start up toolkit logging to file
     sgtk.LogManager().initialize_base_file_handler(ENGINE_NAME)
 
-    # Rely on the classic boostrapping method
+    # Rely on the classic bootstrapping method
     start_toolkit_classic()
 
     # Check if a file was specified to open and open it.
